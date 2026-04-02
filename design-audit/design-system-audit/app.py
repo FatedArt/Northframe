@@ -2,9 +2,12 @@ import re
 import math
 import os
 import json
+import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from collections import Counter
+from urllib.parse import urlparse, parse_qs
 
 import requests
 from flask import Flask, render_template, request, jsonify
@@ -15,6 +18,10 @@ FIGMA_API = "https://api.figma.com/v1"
 # Monorepo root (Northframe/) — export audit markdown ke folder Research/
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WORKSPACE = REPO_ROOT / "Research"
+
+# In-memory progress store (local dev). Keeps audit result until exported.
+AUDIT_STATE: dict[str, dict] = {}
+AUDIT_LOCK = threading.Lock()
 
 VISUAL_COLOR_WORDS = {
     "red", "green", "blue", "yellow", "orange", "purple", "pink", "cyan",
@@ -39,13 +46,39 @@ def filter_meta_by_scoped_ids(meta: dict, scoped_ids: set) -> dict:
 # ─── Figma URL parsing ───────────────────────────────────────────────
 
 def parse_figma_url(url: str) -> dict:
-    m = re.search(r"figma\.com/(?:file|design)/([A-Za-z0-9]+)", url)
-    file_key = m.group(1) if m else None
-    node_id = None
-    nm = re.search(r"node-id=([0-9]+-[0-9]+)", url)
-    if nm:
-        node_id = nm.group(1).replace("-", ":")
-    return {"file_key": file_key, "node_id": node_id}
+    if not url or not isinstance(url, str):
+        return {"file_key": None, "node_id": None}
+    try:
+        u = urlparse(url)
+        if "figma.com" not in (u.netloc or ""):
+            return {"file_key": None, "node_id": None}
+
+        # Expected paths:
+        # - /file/<FILE_KEY>/...
+        # - /design/<FILE_KEY>/...
+        parts = [p for p in (u.path or "").split("/") if p]
+        file_key = None
+        for i, part in enumerate(parts):
+            if part in ("file", "design") and i + 1 < len(parts):
+                file_key = parts[i + 1]
+                break
+
+        node_id = None
+        # node-id is usually a query param.
+        q = parse_qs(u.query or "")
+        if "node-id" in q and q["node-id"]:
+            raw = q["node-id"][0]
+            node_id = re.sub(r"^(\d+)[-:](\d+)$", r"\1:\2", raw)
+        elif u.fragment:
+            # Defensive fallback: sometimes node-id can appear in fragment.
+            m = re.search(r"node-id=([^&]+)", u.fragment)
+            if m:
+                raw = m.group(1)
+                node_id = re.sub(r"^(\d+)[-:](\d+)$", r"\1:\2", raw)
+
+        return {"file_key": file_key, "node_id": node_id}
+    except Exception:
+        return {"file_key": None, "node_id": None}
 
 
 # ─── Figma REST API helpers ──────────────────────────────────────────
@@ -109,6 +142,7 @@ def walk_tree(node, parent=None, frame_path="", depth=0):
         "type": node.get("type") or "",
         "parent_id": parent.get("id") if parent else None,
         "parent_name": parent.get("name") if parent else None,
+        "parent_type": parent.get("type") if parent else None,
         "frame_path": current_path,
         "fills": node.get("fills") or [],
         "strokes": node.get("strokes") or [],
@@ -326,7 +360,11 @@ def score_naming(flat_nodes, variables_data):
     ))
 
     # 3) Variant naming (flat_nodes is already scoped to Folder: frames)
-    variant_nodes = [n for n in flat_nodes if n["type"] == "COMPONENT" and "/" in n.get("frame_path", "")]
+    # Variant yang benar biasanya adalah child `COMPONENT` di dalam `COMPONENT_SET`.
+    variant_nodes = [
+        n for n in flat_nodes
+        if n.get("type") == "COMPONENT" and n.get("parent_type") == "COMPONENT_SET"
+    ]
     bad_variants = [n for n in variant_nodes if DEFAULT_PATTERN.match(n["name"])]
     variant_score = max(0, int(100 * (1 - len(bad_variants) / max(len(variant_nodes), 1)))) if variant_nodes else 100
 
@@ -408,13 +446,26 @@ def score_tokens(flat_nodes, variables_data):
     ))
 
     # 3) Alias coverage
-    alias_count = sum(1 for v in all_vars if isinstance((v.get("valuesByMode") or {}).get(list((v.get("valuesByMode") or {}).keys())[0]) if (v.get("valuesByMode") or {}) else None, dict) and ((v.get("valuesByMode") or {}).get(list((v.get("valuesByMode") or {}).keys())[0]) or {}).get("type") == "VARIABLE_ALIAS")
-    alias_pct = alias_count / max(len(all_vars), 1)
+    # Compute alias ratio across all mode-values (more stable than picking "first" mode key).
+    alias_mode_values = 0
+    alias_mode_alias_values = 0
+    for v in all_vars:
+        values_by_mode = v.get("valuesByMode") or {}
+        if not isinstance(values_by_mode, dict):
+            continue
+        for _mode_id, value_raw in values_by_mode.items():
+            if value_raw is None:
+                continue
+            alias_mode_values += 1
+            if isinstance(value_raw, dict) and value_raw.get("type") == "VARIABLE_ALIAS":
+                alias_mode_alias_values += 1
+
+    alias_pct = alias_mode_alias_values / max(alias_mode_values, 1)
     alias_score = min(100, int(alias_pct * 150))
     subchecks.append(audit_subcheck(
         "Alias usage", alias_score,
-        f"{alias_count} of {len(all_vars)} variables are aliases. Good systems alias 40-70% of tokens.",
-        "pass" if alias_pct > 0.3 else ("warn" if alias_count > 0 else "info"),
+        f"{alias_mode_alias_values} of {alias_mode_values} mode-values are VARIABLE_ALIAS (alias_pct={int(alias_pct*100)}%).",
+        "pass" if alias_pct > 0.3 else ("warn" if alias_mode_alias_values > 0 else "info"),
         [],
         "Alias berarti variabel A memakai variabel B sebagai nilainya. Ini memudahkan menyatukan “brand blue” ke satu sumber kebenaran.",
         [
@@ -540,6 +591,105 @@ def score_components(flat_nodes, file_meta, scoped_ids=None):
 def score_accessibility(flat_nodes):
     subchecks = []
     text_nodes = [n for n in flat_nodes if n["type"] == "TEXT" and n["font_size"] > 0]
+
+    def _extract_solid_rgb(paints):
+        """
+        Best-effort: returns (r,g,b) in 0..255 from solid paints.
+        """
+        if not paints:
+            return None
+        candidates = paints if isinstance(paints, list) else [paints]
+        for p in candidates:
+            if not isinstance(p, dict):
+                continue
+            if p.get("type") == "SOLID":
+                col = p.get("color") if isinstance(p.get("color"), dict) else None
+                if not col:
+                    continue
+                r, g, b = col.get("r"), col.get("g"), col.get("b")
+                if isinstance(r, (int, float)) and isinstance(g, (int, float)) and isinstance(b, (int, float)):
+                    # Figma typically stores 0..1.
+                    if r <= 1 and g <= 1 and b <= 1:
+                        return (int(r * 255), int(g * 255), int(b * 255))
+                    return (int(r), int(g), int(b))
+            # Some payloads put {r,g,b,a} directly without type.
+            if any(k in p for k in ("r", "g", "b")):
+                r, g, b = p.get("r"), p.get("g"), p.get("b")
+                if isinstance(r, (int, float)) and isinstance(g, (int, float)) and isinstance(b, (int, float)):
+                    if r <= 1 and g <= 1 and b <= 1:
+                        return (int(r * 255), int(g * 255), int(b * 255))
+                    return (int(r), int(g), int(b))
+            # Or paints may nest under {color:{r,g,b,a}}
+            col = p.get("color") if isinstance(p.get("color"), dict) else None
+            if col and any(k in col for k in ("r", "g", "b")):
+                r, g, b = col.get("r"), col.get("g"), col.get("b")
+                if isinstance(r, (int, float)) and isinstance(g, (int, float)) and isinstance(b, (int, float)):
+                    if r <= 1 and g <= 1 and b <= 1:
+                        return (int(r * 255), int(g * 255), int(b * 255))
+                    return (int(r), int(g), int(b))
+        return None
+
+    def _find_ancestor_bg_rgb(text_node, by_id: dict, max_depth: int = 10):
+        """
+        Best-effort: try to find a solid background color from ancestors.
+        """
+        pid = text_node.get("parent_id")
+        depth = 0
+        while pid and depth < max_depth:
+            anc = by_id.get(pid)
+            if not anc:
+                break
+            bg = _extract_solid_rgb(anc.get("fills") or [])
+            if bg:
+                return bg
+            pid = anc.get("parent_id")
+            depth += 1
+        return None
+
+    # 0) Text contrast (best-effort; depends on whether we can extract text FG and ancestor BG)
+    by_id = {n.get("id"): n for n in flat_nodes if n.get("id")}
+    evaluated = []
+    failing = []
+
+    for n in text_nodes:
+        fg = _extract_solid_rgb(n.get("fills") or [])
+        if not fg:
+            continue
+        bg = _find_ancestor_bg_rgb(n, by_id)
+        if not bg:
+            continue
+        cr = contrast_ratio(fg, bg)
+        evaluated.append((n, cr))
+        threshold = 3.0 if (n.get("font_size", 0) or 0) >= 24 else 4.5
+        if cr < threshold:
+            failing.append((n, cr))
+
+    if evaluated:
+        fail_pct = len(failing) / max(len(evaluated), 1)
+        contrast_score = max(0, int(100 * (1 - fail_pct)))
+        contrast_examples = [f"{n['name']} ({int(n['font_size'])}px) cr={cr:.2f} · id:{n['id']}" for n, cr in failing[:5]]
+        contrast_description = (
+            f"{len(failing)} of {len(evaluated)} TEXT nodes have contrast below threshold "
+            f"(min 4.5 normal / 3.0 large)."
+        )
+        contrast_icon = "warn" if failing else "pass"
+    else:
+        contrast_score = 100
+        contrast_examples = []
+        contrast_description = "Tidak cukup data warna (FG/BG) untuk menghitung kontras otomatis pada TEXT nodes."
+        contrast_icon = "info"
+
+    subchecks.append(audit_subcheck(
+        "Text contrast (WCAG, best-effort)", contrast_score,
+        contrast_description,
+        contrast_icon,
+        contrast_examples,
+        "Kontras yang cukup membantu keterbacaan. Skor ini dihitung jika warna TEXT dan background dari ancestor bisa diekstrak.",
+        [
+            "Gunakan token semantic untuk pasangan warna TEXT dan background yang sudah divalidasi kontrasnya.",
+            "Hindari warna custom yang tidak memiliki pasangan kontras di tema tertentu.",
+        ],
+    ))
 
     # 1) Text sizing
     small = [n for n in text_nodes if n["font_size"] < 12]
@@ -741,16 +891,32 @@ def score_coverage(flat_nodes, file_meta, scoped_ids=None):
 # ─── Full audit pipeline ─────────────────────────────────────────────
 
 def run_full_audit(figma_url: str, token: str):
+    return run_full_audit_with_progress(figma_url, token, progress_cb=None)
+
+
+def run_full_audit_with_progress(figma_url: str, token: str, progress_cb=None):
+    def progress(pct: float, stage: str | None = None):
+        if not progress_cb:
+            return
+        try:
+            progress_cb(float(pct), stage)
+        except Exception:
+            return
+
+    progress(1, "Validasi URL")
     parsed = parse_figma_url(figma_url)
     if not parsed["file_key"]:
         raise ValueError("URL Figma tidak valid")
 
+    progress(8, "Mengunduh file dari Figma")
     file_data = fetch_file(parsed["file_key"], token, node_id=None, depth=10)
+    progress(28, "Mengunduh variabel")
     variables_data = fetch_variables(parsed["file_key"], token)
 
     doc = file_data.get("document") or {}
     file_name = file_data.get("name") or "Untitled"
 
+    progress(40, "Memindai node dalam scope")
     flat = walk_tree(doc)
     scoped_flat = filter_nodes_folder_only(flat)
     scoped_ids = {n["id"] for n in scoped_flat if n.get("id")}
@@ -765,11 +931,14 @@ def run_full_audit(figma_url: str, token: str):
     print(f"[Audit] Total nodes: {len(flat)}, Scoped nodes (inside Folder: frames): {len(scoped_flat)}, Scoped IDs: {len(scoped_ids)}")
     print(f"[Audit] Folder: frames detected ({len(folder_frames_found)}): {sorted(folder_frames_found)}")
 
+    progress(60, "Menghitung skor naming & tokens")
     s_naming, c_naming = score_naming(scoped_flat, variables_data)
     s_tokens, c_tokens = score_tokens(scoped_flat, variables_data)
+    progress(70, "Menghitung skor komponen & konsistensi")
     s_components, c_components = score_components(scoped_flat, file_data, scoped_ids)
     s_access, c_access = score_accessibility(scoped_flat)
     s_consist, c_consist = score_consistency(scoped_flat, file_data, scoped_ids)
+    progress(82, "Menghitung coverage")
     s_coverage, c_coverage = score_coverage(scoped_flat, file_data, scoped_ids)
 
     total = int((s_naming + s_tokens + s_components + s_access + s_consist + s_coverage) / 6)
@@ -784,6 +953,11 @@ def run_full_audit(figma_url: str, token: str):
         if n.get("type") in ("COMPONENT", "COMPONENT_SET") and n.get("id"):
             comp_id_to_tree_path[n["id"]] = n.get("frame_path") or ""
 
+    comp_id_to_bbox = {}
+    for n in scoped_flat:
+        if n.get("type") in ("COMPONENT", "COMPONENT_SET") and n.get("id"):
+            comp_id_to_bbox[n["id"]] = {"width": n.get("width", 0), "height": n.get("height", 0)}
+
     comp_meta = filter_meta_by_scoped_ids(file_data.get("components") or {}, scoped_ids)
     categories = {}
     for comp_id, comp in comp_meta.items():
@@ -795,12 +969,15 @@ def run_full_audit(figma_url: str, token: str):
         if key not in categories:
             categories[key] = {"name": key, "page": page, "components": [], "count": 0}
         tree_path = comp_id_to_tree_path.get(comp_id, "")
+        bbox = comp_id_to_bbox.get(comp_id) or {}
         categories[key]["components"].append({
             "id": comp_id,
             "name": comp.get("name", ""),
             "description": comp.get("description", ""),
             "frame": frame_name,
             "tree_path": tree_path,
+            "width": bbox.get("width", 0),
+            "height": bbox.get("height", 0),
         })
         categories[key]["count"] += 1
 
@@ -817,6 +994,7 @@ def run_full_audit(figma_url: str, token: str):
 
     status = "excellent" if total >= 90 else "good" if total >= 75 else "needs-work" if total >= 60 else "critical"
 
+    progress(100, "Selesai menghitung audit")
     return {
         "file_name": file_name,
         "file_key": parsed["file_key"],
@@ -874,7 +1052,17 @@ def generate_doc(comp, audit_result, viewport):
     lines.append("## Temuan Detail")
     lines.append("")
     for key in ("naming", "tokens", "components", "accessibility", "consistency", "coverage"):
-        for ch in cat_scores[key]["checks"]:
+        checks = cat_scores[key].get("checks") or []
+        # Ringkas agar dokumentasi cepat discan:
+        # - Jika ada warn/fail, tampilkan warn/fail (maks 3 terendah).
+        # - Jika semuanya pass/info, tampilkan 1 check terendah (maks 1).
+        non_success = [ch for ch in checks if ch.get("icon") in ("warn", "fail")]
+        if non_success:
+            chosen = sorted(non_success, key=lambda x: x.get("score", 100))[:3]
+        else:
+            chosen = sorted(checks, key=lambda x: x.get("score", 100))[:1] if checks else []
+
+        for ch in chosen:
             icon = "🔴" if ch["icon"] == "fail" else "🟡" if ch["icon"] == "warn" else "🟢" if ch["icon"] == "pass" else "ℹ️"
             lines.append(f"### {icon} {ch['label']} ({ch['score']}/100)")
             lines.append(f"{ch['description']}")
@@ -910,7 +1098,7 @@ def export_documentation(audit_result, base_path=None):
     for cat in audit_result.get("component_categories", []):
         frame_name = cat["name"]
         for comp in cat.get("components", []):
-            viewport = detect_viewport(comp["name"], frame_name)
+            viewport = detect_viewport(comp["name"], frame_name, width=comp.get("width", 0) or 0)
             safe_frame = re.sub(r'[<>:"/\\|?*]', '_', frame_name)
             safe_comp = re.sub(r'[<>"/\\|?*]', '_', comp["name"])
             folder = base / f"{safe_frame}:{safe_comp}"
@@ -936,22 +1124,83 @@ def api_audit():
     token = data.get("token", "")
     if not figma_url or not token:
         return jsonify({"error": "Figma URL dan Personal Access Token wajib diisi"}), 400
-    try:
-        result = run_full_audit(figma_url, token)
-        return jsonify(result)
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 500
-        if status == 403:
-            return jsonify({"error": "Token tidak valid atau tidak punya akses ke file ini"}), 403
-        if status == 404:
-            return jsonify({"error": "File Figma tidak ditemukan"}), 404
-        return jsonify({"error": f"Figma API error: {status}"}), status
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": f"Terjadi kesalahan: {str(e)}"}), 500
+
+    audit_id = str(uuid.uuid4())
+    with AUDIT_LOCK:
+        AUDIT_STATE[audit_id] = {
+            "status": "running",
+            "progress": 1,
+            "stage": "Menyiapkan audit...",
+            "result": None,
+            "error": None,
+        }
+
+    def worker():
+        try:
+            def progress_cb(pct, stage):
+                with AUDIT_LOCK:
+                    st = AUDIT_STATE.get(audit_id)
+                    if not st or st.get("status") != "running":
+                        return
+                    st["progress"] = max(0, min(100, pct))
+                    if stage:
+                        st["stage"] = stage
+
+            result = run_full_audit_with_progress(figma_url, token, progress_cb=progress_cb)
+            with AUDIT_LOCK:
+                AUDIT_STATE[audit_id]["status"] = "done"
+                AUDIT_STATE[audit_id]["progress"] = 100
+                AUDIT_STATE[audit_id]["stage"] = "Selesai"
+                AUDIT_STATE[audit_id]["result"] = result
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 500
+            if status == 403:
+                msg = "Token tidak valid atau tidak punya akses ke file ini"
+            elif status == 404:
+                msg = "File Figma tidak ditemukan"
+            else:
+                msg = f"Figma API error: {status}"
+            with AUDIT_LOCK:
+                AUDIT_STATE[audit_id]["status"] = "error"
+                AUDIT_STATE[audit_id]["error"] = msg
+                AUDIT_STATE[audit_id]["stage"] = "Gagal"
+        except ValueError as e:
+            with AUDIT_LOCK:
+                AUDIT_STATE[audit_id]["status"] = "error"
+                AUDIT_STATE[audit_id]["error"] = str(e)
+                AUDIT_STATE[audit_id]["stage"] = "Gagal"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            with AUDIT_LOCK:
+                AUDIT_STATE[audit_id]["status"] = "error"
+                AUDIT_STATE[audit_id]["error"] = f"Terjadi kesalahan: {str(e)}"
+                AUDIT_STATE[audit_id]["stage"] = "Gagal"
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"audit_id": audit_id, "status": "running"}), 202
+
+
+@app.route("/api/audit/status", methods=["GET"])
+def api_audit_status():
+    audit_id = (request.args.get("auditId") or "").strip()
+    if not audit_id:
+        return jsonify({"error": "auditId wajib"}), 400
+    with AUDIT_LOCK:
+        st = AUDIT_STATE.get(audit_id)
+        if not st:
+            return jsonify({"error": "audit tidak ditemukan"}), 404
+
+        payload = {
+            "status": st.get("status"),
+            "progress": st.get("progress"),
+            "stage": st.get("stage"),
+        }
+        if st.get("status") == "done":
+            payload["result"] = st.get("result")
+        if st.get("status") == "error":
+            payload["error"] = st.get("error")
+        return jsonify(payload)
 
 
 @app.route("/api/tokens", methods=["POST"])
@@ -991,38 +1240,7 @@ def api_export():
         return jsonify({"error": f"Export gagal: {str(e)}"}), 500
 
 
-@app.route("/api/token-diagnostics", methods=["POST"])
-def api_token_diagnostics():
-    data = request.json or {}
-    figma_url = data.get("figmaUrl", "")
-    token = data.get("token", "")
-    if not figma_url or not token:
-        return jsonify({"error": "Figma URL dan token wajib diisi"}), 400
-    parsed = parse_figma_url(figma_url)
-    if not parsed["file_key"]:
-        return jsonify({"error": "URL tidak valid"}), 400
-
-    headers = {"X-Figma-Token": token}
-    checks = []
-
-    for label, endpoint in [
-        ("me", f"{FIGMA_API}/me"),
-        ("file", f"{FIGMA_API}/files/{parsed['file_key']}"),
-        ("variables", f"{FIGMA_API}/files/{parsed['file_key']}/variables/local"),
-    ]:
-        try:
-            r = requests.get(endpoint, headers=headers, timeout=30)
-            checks.append({
-                "check": label,
-                "status_code": r.status_code,
-                "ok": r.status_code < 400,
-                "message": None if r.status_code < 400 else (r.text[:220] if r.text else "error"),
-            })
-        except Exception as e:
-            checks.append({"check": label, "status_code": 0, "ok": False, "message": str(e)})
-
-    return jsonify({"file_key": parsed["file_key"], "checks": checks})
-
-
 if __name__ == "__main__":
-    app.run(debug=True, port=5555)
+    # Disable debug by default for safety; enable via FLASK_DEBUG=1.
+    debug_flag = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(debug=debug_flag, port=5555)

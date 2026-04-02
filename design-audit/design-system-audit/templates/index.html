@@ -32,8 +32,6 @@
           class="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm outline-none focus:ring-2 focus:ring-zinc-300/20" />
         <button id="btnAudit" onclick="runAudit()"
           class="h-10 px-4 rounded-md bg-zinc-100 text-zinc-900 text-sm font-medium hover:bg-zinc-200">Audit</button>
-        <button onclick="runDiagnostics()"
-          class="h-10 px-4 rounded-md border border-zinc-700 text-sm hover:bg-zinc-800">Diagnose</button>
       </div>
     </section>
 
@@ -68,7 +66,7 @@ const AUDIT_LOADING_HTML = `
     <div id="auditProgressFill" class="h-full rounded-full bg-gradient-to-r from-zinc-400 to-zinc-100" style="width:0%"></div>
   </div>
   <p class="text-center text-sm text-zinc-300 mt-3 tabular-nums"><span id="auditProgressPct">0</span>%</p>
-  <p class="text-center text-[10px] text-zinc-600 mt-4 leading-relaxed">Tampilan persentase bersifat perkiraan (estimasi) — server mengunduh seluruh file sekaligus dari API Figma, tanpa laporan langkah resmi.</p>
+  <p class="text-center text-[10px] text-zinc-600 mt-4 leading-relaxed">Progress diambil dari server (berdasarkan tahapan proses).</p>
 </section>`;
 
 function auditProgressStageLabel(pct){
@@ -97,19 +95,26 @@ function stopAuditProgressAnimation(){
   if(auditProgressTimer){ clearInterval(auditProgressTimer); auditProgressTimer = null; }
 }
 
-function finishAuditProgressUI(){
+function setAuditProgressUI(pct, stage){
   const f = $('auditProgressFill'), p = $('auditProgressPct'), s = $('auditProgressStage');
-  if(f) f.style.width = '100%';
-  if(p) p.textContent = '100';
-  if(s) s.textContent = 'Selesai memproses';
+  const safePct = Math.max(0, Math.min(100, Number(pct || 0)));
+  if(f) f.style.width = safePct + '%';
+  if(p) p.textContent = String(Math.round(safePct));
+  if(s && stage) s.textContent = stage;
 }
 function esc(s){
   if(s==null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function loadSettings(){ const t=localStorage.getItem('figma_pat'); if(t) $('figmaToken').value=t; const u=localStorage.getItem('figma_last_url'); if(u) $('figmaUrl').value=u; }
-function saveSettings(){ localStorage.setItem('figma_pat',$('figmaToken').value); localStorage.setItem('figma_last_url',$('figmaUrl').value); }
+// Security: token PAT tidak disimpan di browser. Yang disimpan hanya URL terakhir.
+function loadSettings(){
+  const u=localStorage.getItem('figma_last_url');
+  if(u) $('figmaUrl').value=u;
+}
+function saveSettings(){
+  localStorage.setItem('figma_last_url',$('figmaUrl').value);
+}
 
 function toast(msg){
   const el=$('toast'); el.textContent=msg; el.classList.remove('opacity-0'); el.classList.add('opacity-100');
@@ -264,19 +269,6 @@ function renderDashboard(data){
   $('dashboardContent').innerHTML = h;
 }
 
-async function runDiagnostics(){
-  const url=$('figmaUrl').value.trim(), token=$('figmaToken').value.trim();
-  if(!url||!token){ toast('Isi Figma URL dan token terlebih dahulu'); return; }
-  try{
-    const res=await fetch('/api/token-diagnostics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({figmaUrl:url,token})});
-    const data=await res.json();
-    if(!res.ok) throw new Error(data.error||'Gagal diagnose token');
-    const lines=data.checks.map(c=>`${c.check}: ${c.status_code} ${c.ok?'OK':'FAIL'}`);
-    alert(`Token diagnostics\n\n${lines.join('\n')}`);
-    toast('Diagnostics selesai');
-  }catch(e){ toast(e.message); }
-}
-
 async function runAudit(){
   const url=$('figmaUrl').value.trim(), token=$('figmaToken').value.trim();
   if(!url){ toast('Paste link Figma'); return; }
@@ -287,21 +279,44 @@ async function runAudit(){
   const btn=$('btnAudit'); btn.disabled=true; btn.textContent='Auditing...';
   $('emptyState').classList.add('hidden');
   $('dashboardContent').innerHTML = AUDIT_LOADING_HTML;
-  startAuditProgressAnimation();
   $('exportBar').classList.add('hidden');
 
   try{
     const res=await fetch('/api/audit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({figmaUrl:url,token})});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Audit gagal');
-    stopAuditProgressAnimation();
-    finishAuditProgressUI();
-    await new Promise(r => setTimeout(r, 320));
-    auditResult=data;
-    renderDashboard(data);
-    toast('Audit selesai!');
+
+    const auditId = data.audit_id;
+    if(!auditId) throw new Error('audit_id tidak ditemukan dari server');
+
+    const poll = async () => {
+      const r = await fetch(`/api/audit/status?auditId=${encodeURIComponent(auditId)}`, {method:'GET'});
+      const d = await r.json();
+      if(!r.ok) throw new Error(d.error||'Gagal ambil status audit');
+
+      if(d.status === 'running'){
+        setAuditProgressUI(d.progress, d.stage);
+        await new Promise(resolve => setTimeout(resolve, 600));
+        return poll();
+      }
+
+      if(d.status === 'done'){
+        setAuditProgressUI(100, 'Selesai memproses');
+        auditResult = d.result;
+        renderDashboard(auditResult);
+        toast('Audit selesai!');
+        return;
+      }
+
+      if(d.status === 'error'){
+        throw new Error(d.error || 'Audit gagal');
+      }
+
+      throw new Error(`Status audit tidak dikenal: ${d.status}`);
+    };
+
+    await poll();
   }catch(e){
-    stopAuditProgressAnimation();
     $('dashboardContent').innerHTML=`<section class="rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-300">Error: ${esc(e.message)}</section>`;
     toast(e.message);
   }finally{
