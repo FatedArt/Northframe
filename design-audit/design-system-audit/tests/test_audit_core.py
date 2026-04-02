@@ -34,7 +34,7 @@ except Exception:
 
     class DummyFlask:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.config = {}
 
         def route(self, *_args, **_kwargs):
             def decorator(fn):
@@ -49,6 +49,7 @@ except Exception:
     sys.modules["flask"] = flask_stub
 
 import app as audit_app  # noqa: E402
+import figma_mcp_enrich as mcp_enrich  # noqa: E402
 
 
 class TestAuditCore(unittest.TestCase):
@@ -110,6 +111,57 @@ class TestAuditCore(unittest.TestCase):
         alias_check = next(ch for ch in subchecks if ch["label"] == "Alias usage")
         # alias_mode_alias_values=1, alias_mode_values=2 => alias_pct=0.5 => alias_score=int(0.5*150)=75
         self.assertEqual(alias_check["score"], 75)
+
+    def test_referenced_style_ids_from_nodes(self):
+        nodes = [
+            {"text_style_id": "S:a", "fill_style_id": None},
+            {"stroke_style_id": "S:b"},
+        ]
+        self.assertEqual(audit_app.referenced_style_ids_from_nodes(nodes), {"S:a", "S:b"})
+
+    def test_summarize_file_styles(self):
+        styles = {
+            "S:1": {"name": "Foo", "styleType": "TEXT"},
+            "S:2": {"name": "Bar", "styleType": "FILL"},
+        }
+        s = audit_app.summarize_file_styles(styles)
+        self.assertEqual(s["total"], 2)
+        self.assertEqual(s["by_type"]["TEXT"], 1)
+        self.assertEqual(s["by_type"]["FILL"], 1)
+        self.assertEqual(s["keys"], {"S:1", "S:2"})
+
+    def test_node_has_visible_strokes_and_effects(self):
+        self.assertFalse(audit_app.node_has_visible_strokes([]))
+        self.assertTrue(audit_app.node_has_visible_strokes([{"visible": True}]))
+        self.assertFalse(audit_app.node_has_visible_strokes([{"visible": False}]))
+        self.assertTrue(audit_app.node_has_visible_effects([{"type": "DROP_SHADOW", "visible": True}]))
+
+    def test_mcp_enrichment_enabled_env(self):
+        old = os.environ.pop("FIGMA_MCP_ENRICH", None)
+        try:
+            self.assertFalse(mcp_enrich.mcp_enrichment_enabled())
+            os.environ["FIGMA_MCP_ENRICH"] = "1"
+            self.assertTrue(mcp_enrich.mcp_enrichment_enabled())
+        finally:
+            if old is None:
+                os.environ.pop("FIGMA_MCP_ENRICH", None)
+            else:
+                os.environ["FIGMA_MCP_ENRICH"] = old
+
+    def test_summarize_for_doc_fragment(self):
+        s = mcp_enrich.summarize_for_doc_fragment({"ok": True, "structured": {"score": 88}})
+        self.assertIn("88", s or "")
+        self.assertIsNone(mcp_enrich.summarize_for_doc_fragment({"ok": False}))
+
+    def test_mcp_subprocess_env_sets_apps_and_token(self):
+        old_apps = os.environ.pop("ENABLE_MCP_APPS", None)
+        try:
+            e = mcp_enrich._mcp_subprocess_env("figd_test_token")
+            self.assertEqual(e["FIGMA_ACCESS_TOKEN"], "figd_test_token")
+            self.assertEqual(e.get("ENABLE_MCP_APPS"), "true")
+        finally:
+            if old_apps is not None:
+                os.environ["ENABLE_MCP_APPS"] = old_apps
 
 
 if __name__ == "__main__":

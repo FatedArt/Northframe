@@ -25,7 +25,7 @@
 
   <main class="max-w-6xl mx-auto px-4 py-5 space-y-4">
     <section class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
-      <div class="grid md:grid-cols-[1fr_240px_auto_auto_auto] gap-2">
+      <div class="grid md:grid-cols-[1fr_minmax(160px,240px)_auto] gap-2">
         <input id="figmaUrl" type="url" placeholder="Paste Figma URL"
           class="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm outline-none focus:ring-2 focus:ring-zinc-300/20" />
         <input id="figmaToken" type="password" placeholder="Personal Access Token"
@@ -66,6 +66,9 @@ const AUDIT_LOADING_HTML = `
     <div id="auditProgressFill" class="h-full rounded-full bg-gradient-to-r from-zinc-400 to-zinc-100" style="width:0%"></div>
   </div>
   <p class="text-center text-sm text-zinc-300 mt-3 tabular-nums"><span id="auditProgressPct">0</span>%</p>
+  <div class="flex justify-center mt-4 min-h-[2rem] items-center">
+    <span id="mcpStatusChip" class="hidden inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-medium border max-w-[min(100%,20rem)]"></span>
+  </div>
   <p class="text-center text-[10px] text-zinc-600 mt-4 leading-relaxed">Progress diambil dari server (berdasarkan tahapan proses).</p>
 </section>`;
 
@@ -101,6 +104,44 @@ function setAuditProgressUI(pct, stage){
   if(f) f.style.width = safePct + '%';
   if(p) p.textContent = String(Math.round(safePct));
   if(s && stage) s.textContent = stage;
+}
+
+/** Status MCP dari server: idle | off | pending | running | ok | error */
+function updateMcpStatusChip(mcp){
+  const chip = $('mcpStatusChip');
+  if(!chip){ return; }
+  const st = mcp && mcp.status;
+  if(!st || st === 'idle'){
+    chip.className = 'hidden';
+    chip.textContent = '';
+    chip.removeAttribute('title');
+    return;
+  }
+  const detail = (mcp && mcp.detail) ? String(mcp.detail) : '';
+  if(detail){ chip.title = detail; } else { chip.removeAttribute('title'); }
+
+  let label = '';
+  let cls = 'border-zinc-700 bg-zinc-800/80 text-zinc-300';
+  if(st === 'off'){
+    label = 'MCP: nonaktif';
+    cls = 'border-zinc-600 bg-zinc-800/60 text-zinc-500';
+  } else if(st === 'pending'){
+    label = 'MCP: menunggu audit REST…';
+    cls = 'border-violet-500/40 bg-violet-500/10 text-violet-300';
+  } else if(st === 'running'){
+    label = 'MCP: berjalan…';
+    cls = 'border-amber-500/50 bg-amber-500/15 text-amber-300 animate-pulse';
+  } else if(st === 'ok'){
+    label = 'MCP: selesai OK';
+    cls = 'border-emerald-500/45 bg-emerald-500/10 text-emerald-300';
+  } else if(st === 'error'){
+    label = 'MCP: gagal';
+    cls = 'border-red-500/45 bg-red-500/10 text-red-300';
+  } else {
+    label = 'MCP: ' + st;
+  }
+  chip.className = 'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-medium border max-w-[min(100%,20rem)] truncate ' + cls;
+  chip.textContent = label;
 }
 function esc(s){
   if(s==null) return '';
@@ -154,12 +195,27 @@ function renderDashboard(data){
     {key:'consistency',label:'Consistency'},{key:'coverage',label:'Coverage'}
   ];
 
+  const mcpUi = data.mcp_status || {};
+  const mcpBadge = (() => {
+    const s = mcpUi.status || 'off';
+    let bCls = 'border-zinc-600 bg-zinc-800/50 text-zinc-400';
+    let txt = 'MCP: nonaktif';
+    if(s === 'ok'){ bCls = 'border-emerald-500/45 bg-emerald-500/10 text-emerald-300'; txt = 'MCP: OK'; }
+    else if(s === 'error'){ bCls = 'border-red-500/45 bg-red-500/10 text-red-300'; txt = 'MCP: gagal'; }
+    else if(s === 'pending' || s === 'running'){ bCls = 'border-amber-500/40 bg-amber-500/10 text-amber-300'; txt = 'MCP: ' + (s === 'running' ? 'berjalan…' : 'menunggu…'); }
+    const title = mcpUi.detail ? esc(mcpUi.detail) : '';
+    return `<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${bCls}"${title ? ` title="${title}"` : ''}>${txt}</span>`;
+  })();
+
   let h = `
   <section class="rounded-xl border border-zinc-800 bg-zinc-900 p-5 flex flex-wrap gap-4 items-center">
     <div class="relative h-24 w-24">${ringSVG(data.total_score,96,7,24)}</div>
     <div class="space-y-1">
       <h2 class="text-base font-semibold">${data.file_name}</h2>
-      <div class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium" style="background:${scoreColor(data.total_score)}22;color:${scoreColor(data.total_score)}">${statusLabel(data.status)}</div>
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium" style="background:${scoreColor(data.total_score)}22;color:${scoreColor(data.total_score)}">${statusLabel(data.status)}</div>
+        ${mcpBadge}
+      </div>
       <p class="text-xs text-zinc-400">${data.variables_count} variables · ${data.collections_count} collections · ${data.scoped_nodes ?? 0} scoped nodes (dari ${data.total_nodes} total)</p>
     </div>
   </section>`;
@@ -296,12 +352,14 @@ async function runAudit(){
 
       if(d.status === 'running'){
         setAuditProgressUI(d.progress, d.stage);
+        updateMcpStatusChip(d.mcp);
         await new Promise(resolve => setTimeout(resolve, 600));
         return poll();
       }
 
       if(d.status === 'done'){
         setAuditProgressUI(100, 'Selesai memproses');
+        updateMcpStatusChip(d.mcp);
         auditResult = d.result;
         renderDashboard(auditResult);
         toast('Audit selesai!');
@@ -309,6 +367,7 @@ async function runAudit(){
       }
 
       if(d.status === 'error'){
+        updateMcpStatusChip(d.mcp);
         throw new Error(d.error || 'Audit gagal');
       }
 

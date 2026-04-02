@@ -1,2 +1,4 @@
 flask>=3.0
 requests>=2.31
+# Opsional — untuk FIGMA_MCP_ENRICH=1 (perlu Node/npx + figma-console-mcp):
+mcp>=1.2.0

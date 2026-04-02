@@ -13,6 +13,8 @@ import requests
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
+# Tanpa ini, saat FLASK_DEBUG=0 template di-cache di memori — ubah `templates/*.html` tidak terlihat sampai restart server.
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 FIGMA_API = "https://api.figma.com/v1"
 # Monorepo root (Northframe/) — export audit markdown ke folder Research/
@@ -146,6 +148,7 @@ def walk_tree(node, parent=None, frame_path="", depth=0):
         "frame_path": current_path,
         "fills": node.get("fills") or [],
         "strokes": node.get("strokes") or [],
+        "effects": node.get("effects") or [],
         "bound_variables": bound_vars,
         "component_properties": comp_props,
         "description": node.get("description") or "",
@@ -155,7 +158,9 @@ def walk_tree(node, parent=None, frame_path="", depth=0):
         "line_height_px": style.get("lineHeightPx") if isinstance(style, dict) else None,
         "text_style_id": styles.get("text") if isinstance(styles, dict) else None,
         "fill_style_id": (styles.get("fill") or styles.get("fills")) if isinstance(styles, dict) else None,
+        "stroke_style_id": styles.get("stroke") if isinstance(styles, dict) else None,
         "effect_style_id": styles.get("effect") if isinstance(styles, dict) else None,
+        "grid_style_id": styles.get("grid") if isinstance(styles, dict) else None,
         "characters": node.get("characters") or "",
         "depth": depth,
     }
@@ -189,6 +194,46 @@ def contrast_ratio(fg, bg):
     l2 = relative_luminance(*bg)
     lighter, darker = max(l1, l2), min(l1, l2)
     return (lighter + 0.05) / (darker + 0.05)
+
+
+def referenced_style_ids_from_nodes(flat_nodes) -> set:
+    """Kumpulkan key style (S:...) dari node untuk dibandingkan dengan `file.styles`."""
+    keys = set()
+    if not flat_nodes:
+        return keys
+    for n in flat_nodes:
+        if not isinstance(n, dict):
+            continue
+        for k in ("text_style_id", "fill_style_id", "stroke_style_id", "effect_style_id", "grid_style_id"):
+            v = n.get(k)
+            if v:
+                keys.add(str(v))
+    return keys
+
+
+def summarize_file_styles(file_styles: dict | None) -> dict:
+    """Hitung style terdefinisi di file (REST `styles` map)."""
+    if not file_styles or not isinstance(file_styles, dict):
+        return {"total": 0, "by_type": {}, "keys": set()}
+    by_type: dict[str, int] = {}
+    for sid, meta in file_styles.items():
+        if not isinstance(meta, dict):
+            continue
+        st = (meta.get("styleType") or meta.get("style_type") or "UNKNOWN")
+        by_type[st] = by_type.get(st, 0) + 1
+    return {"total": len(file_styles), "by_type": by_type, "keys": set(file_styles.keys())}
+
+
+def node_has_visible_strokes(strokes) -> bool:
+    if not strokes:
+        return False
+    return any(isinstance(s, dict) and s.get("visible", True) for s in strokes)
+
+
+def node_has_visible_effects(effects) -> bool:
+    if not effects:
+        return False
+    return any(isinstance(e, dict) and e.get("visible", True) for e in effects)
 
 
 # ─── Variable helpers ─────────────────────────────────────────────────
@@ -509,6 +554,27 @@ def score_tokens(flat_nodes, variables_data):
         ],
     ))
 
+    # 6) Stroke binding (hybrid REST: stroke styles + boundVariables.strokes)
+    strokeable = [n for n in flat_nodes if node_has_visible_strokes(n.get("strokes") or []) and n["type"] not in ("DOCUMENT", "CANVAS", "PAGE")]
+    stroke_bound = sum(
+        1 for n in strokeable
+        if n.get("stroke_style_id") or (n.get("bound_variables") or {}).get("strokes")
+    )
+    stroke_pct = stroke_bound / max(len(strokeable), 1)
+    stroke_score = max(0, min(100, int(stroke_pct * 100))) if strokeable else 100
+    stroke_unbound = [n for n in strokeable if not n.get("stroke_style_id") and not (n.get("bound_variables") or {}).get("strokes")]
+    subchecks.append(audit_subcheck(
+        "Stroke binding coverage", stroke_score,
+        f"{stroke_bound} of {len(strokeable)} stroked nodes use a stroke style or stroke variable." if strokeable else "No stroked nodes in scope.",
+        "pass" if stroke_pct > 0.7 or not strokeable else ("warn" if stroke_pct > 0.3 else "fail"),
+        [f"{n['name']} ({n['type']}) · id:{n['id']} · {n.get('frame_path','')}" for n in stroke_unbound[:5]],
+        "Stroke yang tidak terikat style/token sama rentannya dengan fill mentah: border brand dan tema sulit dijaga konsisten.",
+        [
+            "Gunakan stroke style atau variabel NUMBER/COLOR untuk ketebalan dan warna garis.",
+            "Samakan dengan token border yang sudah dipakai komponen sejenis.",
+        ],
+    ))
+
     overall = int(sum(s["score"] for s in subchecks) / max(len(subchecks), 1))
     return overall, subchecks
 
@@ -535,6 +601,22 @@ def score_components(flat_nodes, file_meta, scoped_ids=None):
         [
             "Pilih komponen utama → panel kanan → isi Description dengan usage, a11y, dan batasan.",
             "Cantumkan link ke dokumentasi atau Storybook jika ada.",
+        ],
+    ))
+
+    # 1b) Documentation links (REST `documentationLinks` pada metadata komponen)
+    with_doclinks = {k: v for k, v in comp_meta.items() if (v.get("documentationLinks") or [])}
+    without_doclinks = {k: v for k, v in comp_meta.items() if not (v.get("documentationLinks") or [])}
+    link_pct = len(with_doclinks) / max(total_comp, 1)
+    link_score = max(0, min(100, int(link_pct * 100)))
+    subchecks.append(audit_subcheck(
+        "Documentation links", link_score,
+        f"{len(with_doclinks)} of {total_comp} components have documentationLinks." if total_comp else "No components to evaluate.",
+        "pass" if link_pct > 0.4 else ("warn" if link_pct > 0.1 else ("info" if total_comp else "info")),
+        [f"{v.get('name', '')} · id:{k}" for k, v in list(without_doclinks.items())[:5]],
+        "Link ke URL (Storybook, Confluence, dsb.) di metadata Figma memperkaya handoff tanpa mengganti alur audit.",
+        [
+            "Tambahkan documentation link di panel komponen untuk sumber kebenaran teknis.",
         ],
     ))
 
@@ -778,6 +860,25 @@ def score_consistency(flat_nodes, file_meta, scoped_ids=None):
         ],
     ))
 
+    stroke_hard = [
+        n for n in flat_nodes
+        if node_has_visible_strokes(n.get("strokes") or [])
+        and not n["bound_variables"].get("strokes")
+        and not n["stroke_style_id"]
+        and n["type"] not in ("DOCUMENT", "CANVAS", "PAGE")
+    ]
+    sh_score = max(0, min(100, 100 - min(len(stroke_hard), 40) * 2))
+    subchecks.append(audit_subcheck(
+        "Hardcoded strokes", sh_score,
+        f"{len(stroke_hard)} nodes use hardcoded strokes (no variable / stroke style)." if stroke_hard else "No hardcoded strokes in scope.",
+        "warn" if stroke_hard else "pass",
+        [f"{n['name']} ({n['type']}) · id:{n['id']} · {n.get('frame_path','')}" for n in stroke_hard[:5]],
+        "Stroke manual mempersulit konsistensi border dan tema (mirip fill mentah).",
+        [
+            "Terapkan stroke style atau variabel pada garis yang membentuk UI system.",
+        ],
+    ))
+
     # 3) Default layer names
     all_default = [n for n in flat_nodes if DEFAULT_PATTERN.match(n["name"])]
     def_score = max(0, int(100 * (1 - len(all_default) / max(len(flat_nodes), 1))))
@@ -854,7 +955,7 @@ def score_coverage(flat_nodes, file_meta, scoped_ids=None):
         ],
     ))
 
-    # 3) Effect style coverage
+    # 3) Effect style usage
     effect_nodes = [n for n in flat_nodes if n["effect_style_id"]]
     eff_score = 100 if effect_nodes else 50
     subchecks.append(audit_subcheck(
@@ -868,6 +969,45 @@ def score_coverage(flat_nodes, file_meta, scoped_ids=None):
             "Jika belum perlu shadow di scope ini, abaikan skor info atau kecilkan penggunaan efek manual.",
         ],
     ))
+
+    manual_fx = [
+        n for n in flat_nodes
+        if node_has_visible_effects(n.get("effects") or [])
+        and not n.get("effect_style_id")
+        and n["type"] not in ("DOCUMENT", "CANVAS", "PAGE")
+    ]
+    fx_score = max(0, int(100 * (1 - len(manual_fx) / max(len(manual_fx) + len(effect_nodes), 1)))) if (manual_fx or effect_nodes) else 100
+    subchecks.append(audit_subcheck(
+        "Effect vs effect style", fx_score,
+        f"{len(manual_fx)} nodes have visible effects without an effect style (manual blur/shadow)." if manual_fx else "Effects are either absent or use styles.",
+        "warn" if manual_fx else ("info" if not effect_nodes and not manual_fx else "pass"),
+        [f"{n['name']} · id:{n['id']} · {n.get('frame_path','')}" for n in manual_fx[:5]],
+        "Hybrid REST: mendeteksi efek yang diset langsung di layer tanpa shared effect style — rawan inkonsistensi elevasi.",
+        [
+            "Kompilasikan shadow/blur ke effect style library lalu ganti efek manual.",
+        ],
+    ))
+
+    # 3b) File styles vs references in Folder: scope (REST `file.styles` pada respons GET file)
+    file_styles_root = file_meta.get("styles") if isinstance(file_meta, dict) else None
+    summary_st = summarize_file_styles(file_styles_root) if file_styles_root else {"total": 0, "by_type": {}, "keys": set()}
+    if summary_st["total"] > 0:
+        refs_scope = referenced_style_ids_from_nodes(flat_nodes)
+        orphan_keys = summary_st["keys"] - refs_scope
+        orphan_cnt = len(orphan_keys)
+        orphan_ratio = orphan_cnt / max(summary_st["total"], 1)
+        hyg_score = max(0, int(100 * (1 - min(1.0, orphan_ratio * 1.2))))
+        subchecks.append(audit_subcheck(
+            "Style definitions vs scope usage", hyg_score,
+            f"{summary_st['total']} styles terdefinisi di file; {orphan_cnt} tidak direferensikan node di scope Folder: (~{int(orphan_ratio * 100)}%).",
+            "warn" if orphan_ratio > 0.75 and summary_st["total"] >= 8 else "info",
+            sorted(list(orphan_keys))[:5],
+            "Membandingkan map `styles` dari respons API dengan style ID yang dipakai di subtree Folder:. Banyak “orphan” di scope bisa wajar jika style dipakai di luar frame komponen.",
+            [
+                "Rapikan style yang memang tidak dipakai, atau pindahkan ke library terpisah.",
+                "Pastikan komponen utama memakai text/fill/effect style agar skor scope meningkat.",
+            ],
+        ))
 
     # 4) Component presence
     comp_meta = filter_meta_by_scoped_ids(file_meta.get("components") or {}, _scoped_ids)
@@ -908,8 +1048,12 @@ def run_full_audit_with_progress(figma_url: str, token: str, progress_cb=None):
     if not parsed["file_key"]:
         raise ValueError("URL Figma tidak valid")
 
-    progress(8, "Mengunduh file dari Figma")
-    file_data = fetch_file(parsed["file_key"], token, node_id=None, depth=10)
+    node_id = parsed.get("node_id")
+    if node_id:
+        progress(8, "Mengunduh subtree file dari Figma (node-id dari URL)")
+    else:
+        progress(8, "Mengunduh file dari Figma")
+    file_data = fetch_file(parsed["file_key"], token, node_id=node_id, depth=10)
     progress(28, "Mengunduh variabel")
     variables_data = fetch_variables(parsed["file_key"], token)
 
@@ -931,6 +1075,7 @@ def run_full_audit_with_progress(figma_url: str, token: str, progress_cb=None):
     print(f"[Audit] Total nodes: {len(flat)}, Scoped nodes (inside Folder: frames): {len(scoped_flat)}, Scoped IDs: {len(scoped_ids)}")
     print(f"[Audit] Folder: frames detected ({len(folder_frames_found)}): {sorted(folder_frames_found)}")
 
+    progress(45, "REST hybrid: metadata styles & stroke/effect dari struktur file")
     progress(60, "Menghitung skor naming & tokens")
     s_naming, c_naming = score_naming(scoped_flat, variables_data)
     s_tokens, c_tokens = score_tokens(scoped_flat, variables_data)
@@ -994,11 +1139,24 @@ def run_full_audit_with_progress(figma_url: str, token: str, progress_cb=None):
 
     status = "excellent" if total >= 90 else "good" if total >= 75 else "needs-work" if total >= 60 else "critical"
 
-    progress(100, "Selesai menghitung audit")
+    # Biarkan ruang progress 99–100 untuk enrichment MCP opsional (FIGMA_MCP_ENRICH=1).
+    _mcp = (os.environ.get("FIGMA_MCP_ENRICH") or "").strip().lower() in ("1", "true", "yes", "on")
+    progress(98 if _mcp else 100, "Selesai menghitung audit")
     return {
         "file_name": file_name,
         "file_key": parsed["file_key"],
         "figma_url": figma_url,
+        "audit_scope": {
+            "node_id": node_id,
+            "subtree_only": bool(node_id),
+            "hybrid": "rest+structure",
+            "note": (
+                "Akurasi ditingkatkan via node-id URL, styles map API, stroke/effect/style hygiene. "
+                "Set FIGMA_MCP_ENRICH=1 (+ pip install mcp, npx) untuk enrichment MCP; "
+                "buka Figma Desktop dan jalankan plugin Figma Desktop Bridge sebelum/saat audit. "
+                "Opsional: FIGMA_MCP_BRIDGE_WAIT (detik, default 60), FIGMA_MCP_TIMEOUT untuk call tool."
+            ),
+        },
         "timestamp": datetime.now().isoformat(),
         "total_score": total,
         "status": status,
@@ -1080,7 +1238,23 @@ def generate_doc(comp, audit_result, viewport):
                 lines.append("**Contoh temuan:**")
                 for ex in ch["examples"]:
                     lines.append(f"  - `{ex}`")
-            lines.append("")
+            # Ringkasan enrichment MCP (opsional; sama flow audit, tidak mengubah skor kategori)
+    enrich = audit_result.get("mcp_enrichment")
+    frag = None
+    if enrich and enrich.get("ok"):
+        import figma_mcp_enrich as _mcp_mod
+
+        frag = _mcp_mod.summarize_for_doc_fragment(enrich)
+    if frag:
+        lines.append("## Tambahan (figma-console MCP)")
+        lines.append("")
+        lines.append("Hasil tool `figma_audit_design_system` (referensi silang; skor utama tetap dari audit REST):")
+        lines.append("")
+        lines.append("```")
+        lines.append(frag)
+        lines.append("```")
+        lines.append("")
+
     lines.append("## Risiko Jika Ditunda")
     if audit_result["total_score"] < 60:
         lines.append("- Design system kritis, risiko inkonsistensi tinggi.")
@@ -1133,6 +1307,8 @@ def api_audit():
             "stage": "Menyiapkan audit...",
             "result": None,
             "error": None,
+            "mcp_status": "idle",
+            "mcp_detail": None,
         }
 
     def worker():
@@ -1146,11 +1322,64 @@ def api_audit():
                     if stage:
                         st["stage"] = stage
 
+            env_mcp = (os.environ.get("FIGMA_MCP_ENRICH") or "").strip().lower() in ("1", "true", "yes", "on")
+            with AUDIT_LOCK:
+                st0 = AUDIT_STATE.get(audit_id)
+                if st0:
+                    if env_mcp:
+                        st0["mcp_status"] = "pending"
+                        st0["mcp_detail"] = "Menunggu audit REST selesai"
+                    else:
+                        st0["mcp_status"] = "off"
+                        st0["mcp_detail"] = "FIGMA_MCP_ENRICH tidak aktif di server"
+
             result = run_full_audit_with_progress(figma_url, token, progress_cb=progress_cb)
+
+            mcp_st = "off"
+            mcp_detail = "FIGMA_MCP_ENRICH tidak aktif di server"
+            if env_mcp:
+                mcp_detail = "Enrichment tidak dijalankan"
+            enrich = None
+
+            try:
+                import figma_mcp_enrich as _fec
+            except ImportError:
+                _fec = None
+
+            if env_mcp and _fec is None:
+                mcp_st = "error"
+                mcp_detail = "Tidak bisa mengimpor figma_mcp_enrich atau dependensi `mcp`."
+            elif _fec and _fec.mcp_enrichment_enabled():
+                with AUDIT_LOCK:
+                    st1 = AUDIT_STATE.get(audit_id)
+                    if st1:
+                        st1["mcp_status"] = "running"
+                        st1["mcp_detail"] = "figma_audit_design_system (stdio / npx)"
+                progress_cb(99, "Enrichment figma-console MCP (opsional)...")
+                enrich = _fec.run_mcp_enrichment_sync(figma_url, token)
+                if enrich is not None:
+                    result["mcp_enrichment"] = enrich
+                    if enrich.get("ok"):
+                        result.setdefault("audit_scope", {})
+                        result["audit_scope"]["hybrid"] = "rest+structure+mcp"
+                        result["audit_scope"]["mcp_tool"] = enrich.get("tool")
+                        mcp_st = "ok"
+                        mcp_detail = "Tool selesai: " + str(enrich.get("tool") or "figma_audit_design_system")
+                    else:
+                        mcp_st = "error"
+                        mcp_detail = str(enrich.get("error") or "Panggilan MCP gagal")[:500]
+                else:
+                    mcp_st = "error"
+                    mcp_detail = "Respons enrichment kosong."
+
+            result["mcp_status"] = {"status": mcp_st, "detail": mcp_detail}
+
             with AUDIT_LOCK:
                 AUDIT_STATE[audit_id]["status"] = "done"
                 AUDIT_STATE[audit_id]["progress"] = 100
                 AUDIT_STATE[audit_id]["stage"] = "Selesai"
+                AUDIT_STATE[audit_id]["mcp_status"] = mcp_st
+                AUDIT_STATE[audit_id]["mcp_detail"] = mcp_detail
                 AUDIT_STATE[audit_id]["result"] = result
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else 500
@@ -1164,11 +1393,15 @@ def api_audit():
                 AUDIT_STATE[audit_id]["status"] = "error"
                 AUDIT_STATE[audit_id]["error"] = msg
                 AUDIT_STATE[audit_id]["stage"] = "Gagal"
+                AUDIT_STATE[audit_id]["mcp_status"] = "idle"
+                AUDIT_STATE[audit_id]["mcp_detail"] = None
         except ValueError as e:
             with AUDIT_LOCK:
                 AUDIT_STATE[audit_id]["status"] = "error"
                 AUDIT_STATE[audit_id]["error"] = str(e)
                 AUDIT_STATE[audit_id]["stage"] = "Gagal"
+                AUDIT_STATE[audit_id]["mcp_status"] = "idle"
+                AUDIT_STATE[audit_id]["mcp_detail"] = None
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1176,6 +1409,8 @@ def api_audit():
                 AUDIT_STATE[audit_id]["status"] = "error"
                 AUDIT_STATE[audit_id]["error"] = f"Terjadi kesalahan: {str(e)}"
                 AUDIT_STATE[audit_id]["stage"] = "Gagal"
+                AUDIT_STATE[audit_id]["mcp_status"] = "idle"
+                AUDIT_STATE[audit_id]["mcp_detail"] = None
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"audit_id": audit_id, "status": "running"}), 202
@@ -1195,6 +1430,10 @@ def api_audit_status():
             "status": st.get("status"),
             "progress": st.get("progress"),
             "stage": st.get("stage"),
+            "mcp": {
+                "status": st.get("mcp_status") or "idle",
+                "detail": st.get("mcp_detail"),
+            },
         }
         if st.get("status") == "done":
             payload["result"] = st.get("result")
