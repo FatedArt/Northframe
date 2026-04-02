@@ -12,7 +12,9 @@ from flask import Flask, render_template, request, jsonify
 app = Flask(__name__)
 
 FIGMA_API = "https://api.figma.com/v1"
-WORKSPACE = Path(__file__).resolve().parent.parent
+# Monorepo root (Northframe/) — export audit markdown ke folder Research/
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+WORKSPACE = REPO_ROOT / "Research"
 
 VISUAL_COLOR_WORDS = {
     "red", "green", "blue", "yellow", "orange", "purple", "pink", "cyan",

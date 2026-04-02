@@ -30,3 +30,7 @@ Thumbs.db
 # Flask
 instance/
 .webassets-cache
+
+# Hasil export audit (opsional: hapus baris di bawah jika ingin commit semua laporan)
+Research/*
+!Research/.gitkeep
