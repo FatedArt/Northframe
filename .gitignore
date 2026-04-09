@@ -34,3 +34,6 @@ instance/
 # Hasil export audit (opsional: hapus baris di bawah jika ingin commit semua laporan)
 Research/*
 !Research/.gitkeep
+
+# PRD outputs (local exports; do not push)
+prd/

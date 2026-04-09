@@ -1,4 +1,4 @@
-# User Research Summary - SANDBOX
+# User research summary — sandbox
 
 Area ini khusus untuk percobaan. Kamu boleh menulis draft, mengubah struktur, atau mencoba format berbeda tanpa memengaruhi template inti.
 

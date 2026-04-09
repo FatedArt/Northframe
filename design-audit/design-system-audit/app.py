@@ -17,7 +17,7 @@ app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 FIGMA_API = "https://api.figma.com/v1"
-# Monorepo root (Northframe/) — export audit markdown ke folder Research/
+# Monorepo root (northframe/) — export audit markdown ke folder Research/
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WORKSPACE = REPO_ROOT / "Research"
 

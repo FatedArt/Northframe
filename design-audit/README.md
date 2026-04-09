@@ -6,12 +6,12 @@ Tool untuk memeriksa kualitas dan konsistensi aset desain (saat ini: integrasi F
 
 | Project | Deskripsi |
 |---------|-----------|
-| [DesignSystemAudit](./DesignSystemAudit/) | **Design System Health** — server Flask lokal, audit via Figma API, export ke `../Research/` (root monorepo). |
+| [design-system-audit](./design-system-audit/) | **Design System Health** — server Flask lokal, audit via Figma API, export ke `../Research/` (root monorepo). |
 
-## Menjalankan DesignSystemAudit
+## Menjalankan design-system-audit
 
 ```bash
-cd DesignSystemAudit
+cd design-system-audit
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt

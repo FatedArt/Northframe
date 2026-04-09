@@ -1,4 +1,4 @@
-# Problem Statement - INSTRUCTIONS
+# Problem statement — instructions
 
 Dokumen ini template untuk menuliskan *problem statement* yang jelas, terukur (setidaknya secara kualitatif), dan langsung mengarah ke ruang solusi.
 
@@ -8,9 +8,9 @@ Dokumen ini template untuk menuliskan *problem statement* yang jelas, terukur (s
 - Membuat batasan yang membantu tim fokus saat brainstorming solusi.
 
 ## Input yang dibutuhkan
-- Ringkasan temuan (dari `User Research Summary`)
+- Ringkasan temuan (dari `research-summary`)
 - Pain points utama (dari persona/rangkum riset)
-- Persona utama (dari `Persona Creation`)
+- Persona utama (dari `persona-creation`)
 - Success criteria yang diinginkan pengguna
 
 ## Langkah kerja (repeatable)

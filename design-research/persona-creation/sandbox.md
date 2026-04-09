@@ -1,4 +1,4 @@
-# Persona Creation - SANDBOX
+# Persona creation — sandbox
 
 Area ini untuk mencoba draft persona tanpa mengganggu template instruksi.
 

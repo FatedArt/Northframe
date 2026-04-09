@@ -1,4 +1,4 @@
-# Persona Creation - INSTRUCTIONS
+# Persona creation — instructions
 
 Dokumen ini template untuk menyusun persona yang konsisten dan siap dipakai untuk *problem statement* dan *solution ideation*.
 
@@ -8,7 +8,7 @@ Dokumen ini template untuk menyusun persona yang konsisten dan siap dipakai untu
 - Membantu tim membuat keputusan produk yang lebih terarah.
 
 ## Input yang dibutuhkan
-- Ringkasan riset (dari folder *User Research Summary*)
+- Ringkasan riset (dari folder `research-summary`)
 - Pain points / kebutuhan utama
 - Tugas/aktivitas yang dilakukan pengguna (dari riset)
 - (Opsional) segmentasi: beginner vs advanced, role, frekuensi penggunaan, dsb.

@@ -1,4 +1,4 @@
-# Problem Statement - SANDBOX
+# Problem statement — sandbox
 
 Area eksperimen untuk menulis beberapa versi *problem statement* dan membandingkan mana yang paling jelas, spesifik, dan berbasis bukti.
 

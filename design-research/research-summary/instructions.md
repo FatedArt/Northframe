@@ -1,4 +1,4 @@
-# User Research Summary - INSTRUCTIONS
+# User research summary — instructions
 
 Dokumen ini berfungsi sebagai template yang bisa dipakai ulang setiap kali kamu membuat *user research summary* untuk problem, fitur, atau eksperimen tertentu.
 
