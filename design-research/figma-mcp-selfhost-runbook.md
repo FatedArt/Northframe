@@ -4,12 +4,19 @@ Dokumen ini adalah panduan setup **Figma Console MCP self-host** untuk workflow 
 
 ## Tujuan
 
-- Menjalankan MCP server Figma di infrastruktur sendiri (Cloudflare Workers).
-- Menghubungkan Cursor ke endpoint self-host.
-- Mengaktifkan Cloud Mode pairing dari Figma Desktop Bridge.
+- Menyediakan dua opsi setup: **Local-Only Hardened** dan **Cloud Self-Host**.
+- Menghubungkan Cursor ke Figma MCP dengan konfigurasi aman.
 - Menjaga secret tetap aman (tanpa hardcode token di repo).
 
 ## Arsitektur Singkat
+
+### Local-Only Hardened
+
+- Cursor menjalankan `figma-console-mcp` via `npx` (local runtime).
+- Figma Desktop Bridge terhubung via WebSocket lokal.
+- Auth: PAT via env var (`FIGMA_ACCESS_TOKEN`) untuk call ke API Figma.
+
+### Cloud Self-Host (Opsional)
 
 - MCP server: `https://figma-console-mcp.<subdomain>.workers.dev/mcp`
 - Cursor: `~/.cursor/mcp.json` (server `figma-console-selfhosted`)
@@ -19,10 +26,68 @@ Dokumen ini adalah panduan setup **Figma Console MCP self-host** untuk workflow 
 ## Prasyarat
 
 - Node.js 18+ (disarankan 20+)
-- Akun Cloudflare + `workers.dev` subdomain aktif
+- Akun Cloudflare + `workers.dev` subdomain aktif (hanya untuk profil Cloud Self-Host)
 - Figma Personal Access Token (PAT) aktif
 - Figma Desktop ter-install
 - Cursor ter-install
+
+## Profil Setup (Pilih Salah Satu)
+
+### A) Local-Only Hardened (Direkomendasikan)
+
+Gunakan ini jika prioritas utama adalah minim exposure ke layanan eksternal.
+
+- Cursor menjalankan MCP lokal via NPX.
+- Tidak menggunakan endpoint `workers.dev` untuk Figma MCP.
+- Desktop Bridge tetap berjalan lokal.
+
+Contoh `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "figma-console-selfhosted": {
+      "command": "npx",
+      "args": ["-y", "figma-console-mcp@1.22.3"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "${env:FIGMA_ACCESS_TOKEN}",
+        "ENABLE_MCP_APPS": "true"
+      }
+    }
+  }
+}
+```
+
+Set env PAT (jangan hardcode token di JSON):
+
+```bash
+echo 'export FIGMA_ACCESS_TOKEN="figd_xxx_replace_me"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Jika sebelumnya pernah deploy relay Cloudflare dan ingin hard-disable:
+
+```bash
+cd ~/Research/cursor-figma/cursor/Research/figma-console-mcp
+npx wrangler delete figma-console-mcp --force
+curl -s -o /dev/null -w "%{http_code}" https://figma-console-mcp.northframe.workers.dev/health
+```
+
+Expected verifikasi: `404`.
+
+#### Quick Start (Laptop Pribadi)
+
+1. Set `~/.cursor/mcp.json` pakai `npx -y figma-console-mcp@1.22.3` + `${env:FIGMA_ACCESS_TOKEN}`.
+2. Set PAT di shell profile (`~/.zshrc`), lalu `source ~/.zshrc`.
+3. Restart Cursor total.
+4. Buka Figma Desktop Bridge plugin dan jalankan `Check Figma status`.
+5. (Opsional hard-disable) hapus worker Cloudflare dengan `wrangler delete` seperti di atas.
+
+### B) Cloud Self-Host di Cloudflare (Opsional)
+
+Gunakan ini jika membutuhkan cloud relay/pairing lintas web AI client.
+
+> Catatan: Langkah `1) ... 9)` di bawah ini adalah alur **Profil B (Cloud Self-Host)**.
 
 ## 1) Clone dan Setup Project MCP
 
