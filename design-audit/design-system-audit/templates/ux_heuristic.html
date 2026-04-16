@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}UX Heuristic Evaluation — Northframe{% endblock %}
+{% block main %}
+  <header class="sticky top-0 z-40 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
+      <div class="h-8 w-8 rounded-md bg-violet-500/20 text-violet-300 grid place-items-center font-bold text-xs border border-violet-500/30">UX</div>
+      <div>
+        <h1 class="text-sm font-semibold">UX Heuristic Evaluation</h1>
+        <p class="text-xs text-zinc-400">Nielsen heuristics · sesi evaluasi (roadmap)</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-5 space-y-4 flex-1 w-full">
+    <section class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5 space-y-3">
+      <p class="text-sm text-zinc-300 leading-relaxed">
+        Modul ini akan menampung alur evaluasi usability berbasis <strong class="text-zinc-100 font-medium">10 Nielsen Heuristics</strong>
+        (sesi evaluasi, temuan per heuristic, severity, dan ekspor laporan), sejalan dengan PRD internal di repositori Northframe.
+      </p>
+      <p class="text-xs text-zinc-500">
+        Status: kerangka navigasi sudah aktif; form evaluasi, penyimpanan sesi, dan export akan ditambahkan pada iterasi berikutnya.
+      </p>
+    </section>
+
+    <section class="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+      <h2 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-3">Referensi cepat — 10 Heuristik Nielsen</h2>
+      <ol class="text-sm text-zinc-300 space-y-2 list-decimal list-inside marker:text-zinc-500">
+        <li>Visibility of system status</li>
+        <li>Match between system and the real world</li>
+        <li>User control and freedom</li>
+        <li>Consistency and standards</li>
+        <li>Error prevention</li>
+        <li>Recognition rather than recall</li>
+        <li>Flexibility and efficiency of use</li>
+        <li>Aesthetic and minimalist design</li>
+        <li>Help users recognize, diagnose, and recover from errors</li>
+        <li>Help and documentation</li>
+      </ol>
+    </section>
+
+    <section class="rounded-xl border border-dashed border-zinc-700 p-8 text-center text-zinc-500 text-sm">
+      Workspace evaluasi (project, checklist, scoring, export) akan muncul di sini.
+    </section>
+  </main>
+{% endblock %}

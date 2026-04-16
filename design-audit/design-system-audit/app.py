@@ -1288,7 +1288,17 @@ def export_documentation(audit_result, base_path=None):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("home.html", active="home")
+
+
+@app.route("/design-system-health")
+def design_system_health():
+    return render_template("design_system.html", active="design_system")
+
+
+@app.route("/ux-heuristic")
+def ux_heuristic():
+    return render_template("ux_heuristic.html", active="ux_heuristic")
 
 
 @app.route("/api/audit", methods=["POST"])

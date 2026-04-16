@@ -37,3 +37,6 @@ Research/*
 
 # PRD outputs (local exports; do not push)
 prd/
+
+# Security scan report (local artifact)
+gitleaks-report.json

@@ -33,6 +33,24 @@ northframe/
 - Python 3.10+ untuk **design-system-audit**
 - [Figma Personal Access Token](https://www.figma.com/developers/api#access-tokens) untuk audit
 
+## Menjalankan Dashboard dari Root `northframe/`
+
+```bash
+cd northframe
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 app.py
+```
+
+Buka `http://localhost:5555`.
+
+Struktur route modul saat ini:
+
+- `/` → Dashboard Modules (hub menu modul/fitur)
+- `/design-system-health` → Modul audit design system
+- `/ux-heuristic` → Modul UX heuristic evaluation (kerangka awal)
+
 ## Figma MCP Self-Host (Quickstart)
 
 Untuk workflow AI-assisted design via MCP self-host (Cloudflare + Cursor + Figma Bridge), gunakan panduan berikut:

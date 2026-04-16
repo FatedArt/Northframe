@@ -5,14 +5,20 @@ Dashboard lokal untuk audit kualitas design system dari file Figma.
 ## Setup
 
 ```bash
-cd design-audit/design-system-audit
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+cd northframe
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python app.py
+python3 app.py
 ```
 
 Buka http://localhost:5555 di browser.
+
+Route modul:
+
+- `/` untuk dashboard menu modul
+- `/design-system-health` untuk halaman audit ini
+- `/ux-heuristic` untuk modul heuristic evaluation
 
 ## Cara Pakai
 

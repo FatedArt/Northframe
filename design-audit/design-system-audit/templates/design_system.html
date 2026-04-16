@@ -1,18 +1,14 @@
-<!DOCTYPE html>
-<html lang="id">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Design System Health</title>
-<script src="https://cdn.tailwindcss.com"></script>
+{% extends "base.html" %}
+{% block title %}Design System Health — Northframe{% endblock %}
+{% block head %}
 <style>
   .score-ring{transform:rotate(-90deg)}
   .score-ring .track{fill:none;stroke:#27272a;stroke-width:6}
   .score-ring .progress{fill:none;stroke-width:6;stroke-linecap:round;transition:stroke-dashoffset .9s ease}
   #auditProgressFill{transition:width .25s ease-out}
 </style>
-</head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+{% endblock %}
+{% block main %}
   <header class="sticky top-0 z-40 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
     <div class="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
       <div class="h-8 w-8 rounded-md bg-zinc-100 text-zinc-900 grid place-items-center font-bold text-xs">DS</div>
@@ -23,7 +19,7 @@
     </div>
   </header>
 
-  <main class="max-w-6xl mx-auto px-4 py-5 space-y-4">
+  <main class="max-w-6xl mx-auto px-4 py-5 space-y-4 flex-1 w-full">
     <section class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
       <div class="grid md:grid-cols-[1fr_minmax(160px,240px)_auto] gap-2">
         <input id="figmaUrl" type="url" placeholder="Paste Figma URL"
@@ -52,7 +48,8 @@
   </div>
 
   <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-zinc-800 text-zinc-100 text-xs px-4 py-2 rounded-md opacity-0 transition-opacity"></div>
-
+{% endblock %}
+{% block scripts %}
 <script>
 let auditResult = null;
 let auditProgressTimer = null;
@@ -400,5 +397,4 @@ $('figmaUrl').addEventListener('keydown',e=>{if(e.key==='Enter') runAudit();});
 $('figmaToken').addEventListener('keydown',e=>{if(e.key==='Enter') runAudit();});
 loadSettings();
 </script>
-</body>
-</html>
+{% endblock %}

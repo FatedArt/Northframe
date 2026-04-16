@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Northframe{% endblock %}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+{% block head %}{% endblock %}
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+  <div class="flex min-h-screen flex-col md:flex-row">
+    <aside class="w-full md:w-56 md:shrink-0 border-b md:border-b-0 md:border-r border-zinc-800 bg-zinc-900/40 flex flex-col">
+      <div class="p-4 border-b border-zinc-800">
+        <a href="/" class="flex items-center gap-2 rounded-lg hover:bg-zinc-800/60 transition-colors p-1 -m-1">
+          <span class="h-9 w-9 rounded-md bg-zinc-100 text-zinc-900 grid place-items-center font-bold text-xs shrink-0">NF</span>
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-zinc-100 truncate">Northframe</p>
+            <p class="text-[11px] text-zinc-500">Design ops</p>
+          </div>
+        </a>
+      </div>
+      <nav class="flex-1 p-2 flex flex-row md:flex-col flex-wrap gap-1 md:gap-0.5 md:space-y-0" aria-label="Menu utama">
+        <a href="/"
+          class="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-colors flex-1 md:flex-none min-w-[10rem] {% if active == 'home' %}bg-zinc-100 text-zinc-900 font-medium{% else %}text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70{% endif %}">
+          <span class="text-base leading-none shrink-0" aria-hidden="true">◉</span>
+          <span class="truncate">Dashboard Modules</span>
+        </a>
+        <a href="/design-system-health"
+          class="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-colors flex-1 md:flex-none min-w-[10rem] {% if active == 'design_system' %}bg-zinc-100 text-zinc-900 font-medium{% else %}text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70{% endif %}">
+          <span class="text-base leading-none shrink-0" aria-hidden="true">◆</span>
+          <span class="truncate">Design System Health</span>
+        </a>
+        <a href="/ux-heuristic"
+          class="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-colors flex-1 md:flex-none min-w-[10rem] {% if active == 'ux_heuristic' %}bg-zinc-100 text-zinc-900 font-medium{% else %}text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70{% endif %}">
+          <span class="text-base leading-none shrink-0" aria-hidden="true">◇</span>
+          <span class="truncate">UX Heuristic Evaluation</span>
+        </a>
+      </nav>
+      <p class="hidden md:block p-3 text-[10px] text-zinc-600 border-t border-zinc-800 leading-relaxed">
+        Modul tambahan dapat ditambahkan di menu ini.
+      </p>
+    </aside>
+    <div class="flex-1 flex flex-col min-w-0">
+      {% block main %}{% endblock %}
+    </div>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
